@@ -11,7 +11,19 @@ router.get('/categories', async (req, res) => {
     .order('display_order', { ascending: true });
 
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+
+  const { data: activeSponsorships } = await supabase
+    .from('active_sponsorships')
+    .select('category_id, ends_at');
+
+  const freeMap = Object.fromEntries((activeSponsorships || []).map(s => [s.category_id, s.ends_at]));
+  const withFreeStatus = data.map(cat => ({
+    ...cat,
+    is_free_today: Boolean(freeMap[cat.id]),
+    free_until: freeMap[cat.id] || null
+  }));
+
+  res.json(withFreeStatus);
 });
 
 // GET /api/categories/:id/nominees — nominees + live vote counts for a category

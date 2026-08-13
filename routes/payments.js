@@ -61,6 +61,46 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
       return res.status(404).json({ error: 'Nominee not found or voting is closed for this category' });
     }
 
+    // Check for an active Free Voting Day sponsorship on this category —
+    // verified server-side against the DB, never trusting a client-supplied
+    // "this is free" claim.
+    const { data: activeSponsorship } = await supabase
+      .from('active_sponsorships')
+      .select('id')
+      .eq('category_id', nominee.category_id)
+      .limit(1)
+      .maybeSingle();
+
+    if (activeSponsorship) {
+      const { data: freeTxn, error: freeTxnErr } = await supabase
+        .from('transactions')
+        .insert({
+          nominee_id: nomineeId,
+          phone_number: normalizedPhone,
+          amount: 0,
+          votes_requested: voteCount,
+          status: 'success',
+          result_desc: 'Free Voting Day — sponsored'
+        })
+        .select()
+        .single();
+
+      if (freeTxnErr) return res.status(500).json({ error: freeTxnErr.message });
+
+      const voteRows = Array.from({ length: voteCount }, () => ({
+        nominee_id: nomineeId,
+        transaction_id: freeTxn.id
+      }));
+      const { error: voteErr } = await supabase.from('votes').insert(voteRows);
+      if (voteErr) return res.status(500).json({ error: voteErr.message });
+
+      return res.json({
+        free: true,
+        message: `Free Voting Day — ${voteCount} vote(s) recorded instantly, no payment needed!`,
+        transactionId: freeTxn.id
+      });
+    }
+
     const { data: txn, error: txnErr } = await supabase
       .from('transactions')
       .insert({
@@ -210,12 +250,25 @@ router.post('/webhook', async (req, res) => {
       .eq('fxs_reference', data.reference)
       .single();
 
-    if (!txn) {
-      console.error('[webhook] no matching transaction for reference', data.reference);
+    if (txn) {
+      await creditOrFailTransaction(txn, 'success', { raw: data });
       return;
     }
 
-    await creditOrFailTransaction(txn, 'success', { raw: data });
+    // Not a vote payment — check if it's a Free Voting Day sponsorship instead
+    const { data: sponsorship } = await supabase
+      .from('sponsorships')
+      .select('*')
+      .eq('fxs_reference', data.reference)
+      .single();
+
+    if (sponsorship) {
+      const { activateSponsorship } = require('./sponsorship');
+      await activateSponsorship(sponsorship);
+      return;
+    }
+
+    console.error('[webhook] no matching transaction or sponsorship for reference', data.reference);
   } catch (err) {
     console.error('[webhook] error processing event:', err.message);
     // Response already sent above — nothing further to return here.
