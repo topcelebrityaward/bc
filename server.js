@@ -5,6 +5,7 @@ const cors = require('cors');
 const publicRoutes = require('./routes/public');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
+const { router: sponsorshipRoutes } = require('./routes/sponsorship');
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.get('/', (req, res) => res.json({ status: 'Kenyan Excellence Awards API runn
 app.use('/api', publicRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/sponsorship', sponsorshipRoutes);
 
 // Fallback error handler
 app.use((err, req, res, next) => {
