@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
 
 const VOTE_PRICE = Number(process.env.VOTE_PRICE || 20);
+const MAX_FREE_VOTES_PER_PERSON = Number(process.env.MAX_FREE_VOTES_PER_PERSON || 2);
 
 const paystack = axios.create({
   baseURL: 'https://api.paystack.co',
@@ -66,16 +67,43 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
     // "this is free" claim.
     const { data: activeSponsorship } = await supabase
       .from('active_sponsorships')
-      .select('id')
+      .select('id, starts_at')
       .eq('category_id', nominee.category_id)
       .limit(1)
       .maybeSingle();
 
     if (activeSponsorship) {
+      // Unlike paid votes (self-limiting by cost), free votes have no
+      // natural brake — cap them per phone number per category per
+      // sponsorship window so one person/bot can't dominate a free day.
+      const { data: priorFreeVotes } = await supabase
+        .from('transactions')
+        .select('votes_requested')
+        .eq('phone_number', normalizedPhone)
+        .eq('category_id', nominee.category_id)
+        .eq('status', 'success')
+        .eq('amount', 0)
+        .gte('created_at', activeSponsorship.starts_at);
+
+      const alreadyUsed = (priorFreeVotes || []).reduce((sum, t) => sum + t.votes_requested, 0);
+      const remaining = MAX_FREE_VOTES_PER_PERSON - alreadyUsed;
+
+      if (remaining <= 0) {
+        return res.status(400).json({
+          error: `You've used all ${MAX_FREE_VOTES_PER_PERSON} free votes for this category today. This limit only applies to free voting days — other categories remain unlimited at KSh ${VOTE_PRICE}/vote.`
+        });
+      }
+      if (voteCount > remaining) {
+        return res.status(400).json({
+          error: `Only ${remaining} free vote(s) left for you in this category today. Try a smaller number.`
+        });
+      }
+
       const { data: freeTxn, error: freeTxnErr } = await supabase
         .from('transactions')
         .insert({
           nominee_id: nomineeId,
+          category_id: nominee.category_id,
           phone_number: normalizedPhone,
           amount: 0,
           votes_requested: voteCount,
@@ -105,6 +133,7 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
       .from('transactions')
       .insert({
         nominee_id: nomineeId,
+        category_id: nominee.category_id,
         phone_number: normalizedPhone,
         amount,
         votes_requested: voteCount,
