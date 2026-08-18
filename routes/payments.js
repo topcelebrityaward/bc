@@ -54,12 +54,19 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
     // firing it before we know the nominee is valid.
     const { data: nominee, error: nomErr } = await supabase
       .from('nominees')
-      .select('id, full_name, is_active, category_id, categories!inner(is_active)')
+      .select('id, full_name, is_active, category_id, categories!inner(is_active, voting_ends_at)')
       .eq('id', nomineeId)
       .single();
 
     if (nomErr || !nominee || !nominee.is_active || !nominee.categories.is_active) {
       return res.status(404).json({ error: 'Nominee not found or voting is closed for this category' });
+    }
+
+    // The countdown shown on the frontend is only a display — this is what
+    // actually stops votes once the deadline passes.
+    const deadline = nominee.categories.voting_ends_at;
+    if (deadline && new Date(deadline) <= new Date()) {
+      return res.status(400).json({ error: 'Voting has closed for this category' });
     }
 
     // Check for an active Free Voting Day sponsorship on this category —
