@@ -17,7 +17,7 @@ services:
       - key: PAYSTACK_SECRET_KEY
         sync: false
       - key: VOTE_PRICE
-        value: 10
+        value: 20
       - key: SPONSOR_DAY_PRICE
         value: 50000
       - key: MAX_FREE_VOTES_PER_PERSON

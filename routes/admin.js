@@ -35,10 +35,10 @@ router.use(requireAdmin);
 
 // ---- Categories ----
 router.post('/categories', async (req, res) => {
-  const { name, section, description, display_order } = req.body;
+  const { name, section, description, display_order, voting_ends_at } = req.body;
   const { data, error } = await supabase
     .from('categories')
-    .insert({ name, section, description, display_order })
+    .insert({ name, section, description, display_order, voting_ends_at: voting_ends_at || null })
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -290,6 +290,64 @@ router.patch('/categories/:id/toggle-voting', async (req, res) => {
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+// ---- Nomination applications ----
+router.get('/nominations', async (req, res) => {
+  const { status } = req.query;
+  let query = supabase
+    .from('nomination_applications')
+    .select('*, categories(name)')
+    .order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json(data.map(a => ({ ...a, categoryName: a.categories?.name || '—' })));
+});
+
+// Accepting an application creates the actual nominee row in that category
+router.post('/nominations/:id/accept', async (req, res) => {
+  const { data: application, error: appErr } = await supabase
+    .from('nomination_applications')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+
+  if (appErr || !application) return res.status(404).json({ error: 'Application not found' });
+  if (application.status !== 'pending') {
+    return res.status(400).json({ error: `Already ${application.status}` });
+  }
+
+  const { data: nominee, error: nomErr } = await supabase
+    .from('nominees')
+    .insert({
+      category_id: application.category_id,
+      full_name: application.full_name
+    })
+    .select()
+    .single();
+
+  if (nomErr) return res.status(500).json({ error: nomErr.message });
+
+  const { error: updateErr } = await supabase
+    .from('nomination_applications')
+    .update({ status: 'accepted' })
+    .eq('id', application.id);
+
+  if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+  res.json({ message: 'Application accepted — nominee added', nominee });
+});
+
+router.post('/nominations/:id/reject', async (req, res) => {
+  const { error } = await supabase
+    .from('nomination_applications')
+    .update({ status: 'rejected' })
+    .eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ message: 'Application rejected' });
 });
 
 module.exports = router;

@@ -6,6 +6,7 @@ const publicRoutes = require('./routes/public');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
 const { router: sponsorshipRoutes } = require('./routes/sponsorship');
+const nominationRoutes = require('./routes/nominations');
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use('/api', publicRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/sponsorship', sponsorshipRoutes);
+app.use('/api/nominations', nominationRoutes);
 
 // Fallback error handler
 app.use((err, req, res, next) => {
