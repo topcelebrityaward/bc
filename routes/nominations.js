@@ -50,12 +50,12 @@ router.post('/apply', applyLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Enter a valid Safaricom phone number' });
     }
 
-    let normalizedWhatsapp = null;
-    if (whatsapp && whatsapp.trim()) {
-      normalizedWhatsapp = normalizePhone(whatsapp);
-      if (!isValidSafaricomNumber(normalizedWhatsapp)) {
-        return res.status(400).json({ error: 'Enter a valid WhatsApp number, or leave it blank' });
-      }
+    if (!whatsapp || !whatsapp.trim()) {
+      return res.status(400).json({ error: 'WhatsApp number is required' });
+    }
+    const normalizedWhatsapp = normalizePhone(whatsapp);
+    if (!isValidSafaricomNumber(normalizedWhatsapp)) {
+      return res.status(400).json({ error: 'Enter a valid WhatsApp number' });
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
