@@ -6,7 +6,7 @@ const publicRoutes = require('./routes/public');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
 const { router: sponsorshipRoutes } = require('./routes/sponsorship');
-const nominationRoutes = require('./routes/nominations');
+const { router: nominationRoutes } = require('./routes/nominations');
 
 const app = express();
 

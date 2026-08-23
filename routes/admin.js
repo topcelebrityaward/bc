@@ -298,6 +298,7 @@ router.get('/nominations', async (req, res) => {
   let query = supabase
     .from('nomination_applications')
     .select('*, categories(name)')
+    .eq('payment_status', 'success') // only show applications where the KSh 200 fee was actually paid
     .order('created_at', { ascending: false });
   if (status) query = query.eq('status', status);
 

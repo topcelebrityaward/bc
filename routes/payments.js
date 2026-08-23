@@ -304,7 +304,20 @@ router.post('/webhook', async (req, res) => {
       return;
     }
 
-    console.error('[webhook] no matching transaction or sponsorship for reference', data.reference);
+    // Not that either — check if it's a nomination application fee
+    const { data: application } = await supabase
+      .from('nomination_applications')
+      .select('*')
+      .eq('fxs_reference', data.reference)
+      .single();
+
+    if (application) {
+      const { markApplicationPaid } = require('./nominations');
+      await markApplicationPaid(application);
+      return;
+    }
+
+    console.error('[webhook] no matching transaction, sponsorship, or application for reference', data.reference);
   } catch (err) {
     console.error('[webhook] error processing event:', err.message);
     // Response already sent above — nothing further to return here.

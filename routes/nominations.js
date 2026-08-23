@@ -1,7 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
+
+const APPLICATION_FEE = Number(process.env.APPLICATION_FEE || 200);
+
+const paystack = axios.create({
+  baseURL: 'https://api.paystack.co',
+  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+  timeout: 20000
+});
 
 const applyLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -62,20 +71,94 @@ router.post('/apply', applyLimiter, async (req, res) => {
         email: email ? email.trim() : null,
         phone_number: normalizedPhone,
         category_id: categoryId,
-        status: 'pending'
+        status: 'pending',
+        amount: APPLICATION_FEE,
+        payment_status: 'pending'
       })
       .select()
       .single();
 
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-    res.json({
-      message: 'Your application has been submitted! We\u2019ll review it and be in touch.',
-      applicationId: application.id
-    });
+    try {
+      const { data } = await paystack.post('/charge', {
+        email: `v${normalizedPhone}@gmail.com`,
+        amount: APPLICATION_FEE * 100, // Paystack reads KES amounts in subunits — see payments.js for how this was confirmed
+        currency: 'KES',
+        mobile_money: {
+          phone: `+${normalizedPhone}`,
+          provider: 'mpesa'
+        }
+      });
+
+      await supabase
+        .from('nomination_applications')
+        .update({ fxs_reference: data.data.reference })
+        .eq('id', application.id);
+
+      return res.json({
+        message: data.data.display_text || 'STK Push sent. Enter your M-Pesa PIN to pay the KSh 200 application fee.',
+        applicationId: application.id
+      });
+    } catch (pushErr) {
+      const providerMsg = pushErr.response?.data?.message;
+      await supabase
+        .from('nomination_applications')
+        .update({ payment_status: 'failed' })
+        .eq('id', application.id);
+      return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
+    }
   } catch (err) {
     res.status(500).json({ error: 'Unexpected error submitting application' });
   }
 });
 
-module.exports = router;
+// GET /api/nominations/status/:applicationId — polled by the frontend
+router.get('/status/:applicationId', async (req, res) => {
+  const { data: application, error } = await supabase
+    .from('nomination_applications')
+    .select('*')
+    .eq('id', req.params.applicationId)
+    .single();
+
+  if (error || !application) return res.status(404).json({ error: 'Application not found' });
+
+  if (application.payment_status === 'pending' && application.fxs_reference) {
+    try {
+      const { data } = await paystack.get(`/transaction/verify/${application.fxs_reference}`);
+      const providerStatus = data.data?.status;
+
+      if (providerStatus === 'success') {
+        await markApplicationPaid(application);
+        return res.json({ payment_status: 'success' });
+      }
+      if (providerStatus === 'failed' || providerStatus === 'abandoned') {
+        await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
+        return res.json({ payment_status: 'failed' });
+      }
+    } catch (_) {
+      // Ignore — webhook is still the primary path; this is a fallback poll.
+    }
+  }
+
+  res.json({ payment_status: application.payment_status });
+});
+
+// Marks the application's fee as paid — idempotent, safe to call from both
+// the webhook and the status-poll fallback. Application only becomes
+// visible in the admin review queue once this has run.
+async function markApplicationPaid(application) {
+  const { data: fresh } = await supabase
+    .from('nomination_applications')
+    .select('payment_status')
+    .eq('id', application.id)
+    .single();
+  if (fresh.payment_status === 'success' || fresh.payment_status === 'failed') return; // idempotency guard
+
+  await supabase
+    .from('nomination_applications')
+    .update({ payment_status: 'success' })
+    .eq('id', application.id);
+}
+
+module.exports = { router, markApplicationPaid };

@@ -22,3 +22,5 @@ services:
         value: 50000
       - key: MAX_FREE_VOTES_PER_PERSON
         value: 2
+      - key: APPLICATION_FEE
+        value: 200
