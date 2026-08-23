@@ -30,10 +30,10 @@ function isValidSafaricomNumber(phone) {
 }
 
 // POST /api/nominations/apply
-// body: { fullName, email, phone, categoryId }
+// body: { fullName, email, phone, whatsapp, categoryId }
 router.post('/apply', applyLimiter, async (req, res) => {
   try {
-    const { fullName, email, phone, categoryId } = req.body;
+    const { fullName, email, phone, whatsapp, categoryId } = req.body;
 
     if (!fullName || !fullName.trim()) {
       return res.status(400).json({ error: 'Full name is required' });
@@ -48,6 +48,14 @@ router.post('/apply', applyLimiter, async (req, res) => {
     const normalizedPhone = normalizePhone(phone);
     if (!isValidSafaricomNumber(normalizedPhone)) {
       return res.status(400).json({ error: 'Enter a valid Safaricom phone number' });
+    }
+
+    let normalizedWhatsapp = null;
+    if (whatsapp && whatsapp.trim()) {
+      normalizedWhatsapp = normalizePhone(whatsapp);
+      if (!isValidSafaricomNumber(normalizedWhatsapp)) {
+        return res.status(400).json({ error: 'Enter a valid WhatsApp number, or leave it blank' });
+      }
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -70,6 +78,7 @@ router.post('/apply', applyLimiter, async (req, res) => {
         full_name: fullName.trim(),
         email: email ? email.trim() : null,
         phone_number: normalizedPhone,
+        whatsapp_number: normalizedWhatsapp,
         category_id: categoryId,
         status: 'pending',
         amount: APPLICATION_FEE,
