@@ -91,6 +91,11 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
       });
     } catch (pushErr) {
       const providerMsg = pushErr.response?.data?.error;
+      console.error(
+        '[sponsorship/initiate] FXS Pay stk-push failed:',
+        pushErr.response?.status,
+        pushErr.response?.data || pushErr.message
+      );
       await supabase
         .from('sponsorships')
         .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })

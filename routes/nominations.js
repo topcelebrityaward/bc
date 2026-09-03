@@ -109,6 +109,11 @@ router.post('/apply', applyLimiter, async (req, res) => {
       });
     } catch (pushErr) {
       const providerMsg = pushErr.response?.data?.error;
+      console.error(
+        '[nominations/apply] FXS Pay stk-push failed:',
+        pushErr.response?.status,
+        pushErr.response?.data || pushErr.message
+      );
       await supabase
         .from('nomination_applications')
         .update({ payment_status: 'failed' })
