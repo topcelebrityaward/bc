@@ -21,7 +21,7 @@ app.use(cors());
 // exact raw bytes, not a re-serialized JSON.stringify(req.body)).
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
-app.get('/', (req, res) => res.json({ status: 'Kenyan Excellence Awards API running' }));
+app.get('/', (req, res) => res.json({ status: 'Top Celebrities Award (TCA) API running' }));
 
 app.use('/api', publicRoutes);
 app.use('/api/payments', paymentRoutes);
@@ -36,4 +36,4 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`KEA API listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`TCA API listening on port ${PORT}`));

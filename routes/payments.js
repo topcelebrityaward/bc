@@ -8,9 +8,9 @@ const supabase = require('../supabaseClient');
 const VOTE_PRICE = Number(process.env.VOTE_PRICE || 20);
 const MAX_FREE_VOTES_PER_PERSON = Number(process.env.MAX_FREE_VOTES_PER_PERSON || 2);
 
-const paystack = axios.create({
-  baseURL: 'https://api.paystack.co',
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+const fxspay = axios.create({
+  baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
+  headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
   timeout: 20000
 });
 
@@ -49,9 +49,9 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
 
     const amount = voteCount * VOTE_PRICE;
 
-    // Confirm the nominee up front — unlike FXS Pay, Paystack's charge call
-    // reliably returns a reference synchronously, so there's no benefit to
-    // firing it before we know the nominee is valid.
+    // Confirm the nominee up front — FXS Pay's stk-push call only returns
+    // "started" (202), not a synchronous success/fail, so there's no
+    // benefit to firing it before we know the nominee is valid.
     const { data: nominee, error: nomErr } = await supabase
       .from('nominees')
       .select('id, full_name, is_active, category_id, categories!inner(is_active, voting_ends_at)')
@@ -152,38 +152,28 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
     if (txnErr) return res.status(500).json({ error: txnErr.message });
 
     try {
-      // Paystack requires an email even though voters never provide one —
-      // a synthetic address tied to the phone number is fine, it's never
-      // actually emailed for this channel.
-      //
-      // Paystack reads `amount` in SUBUNITS for KES too (confirmed live:
-      // sending 20 for KSh 20 got "cannot be less than KES 1.00", which only
-      // makes sense if 20 was read as 20 subunits = KES 0.20). So this needs
-      // x100 here specifically — `amount` and everything in our own DB stays
-      // in whole KES, only the value sent to Paystack is converted.
-      const { data } = await paystack.post('/charge', {
-        email: `v${normalizedPhone}@gmail.com`,
-        amount: amount * 100,
-        currency: 'KES',
-        mobile_money: {
-          phone: `+${normalizedPhone}`,
-          provider: 'mpesa'
-        }
+      // FXS Pay takes amounts as plain whole/decimal KES — no subunit
+      // conversion needed (unlike Paystack, which reads KES in subunits).
+      const { data } = await fxspay.post('/api/mpesa/stk-push', {
+        phone: normalizedPhone,
+        amount,
+        description: `${voteCount} vote(s) for ${nominee.full_name}`,
+        email: `v${normalizedPhone}@gmail.com`
       });
 
-      // Paystack's own transaction reference — this is what the webhook
-      // and Verify Transaction API will reference later.
+      // FXS Pay's own transaction id — this is what the webhook and the
+      // /api/mpesa/status/:transactionId poll both reference later.
       await supabase
         .from('transactions')
-        .update({ fxs_reference: data.data.reference })
+        .update({ fxs_reference: data.transactionId })
         .eq('id', txn.id);
 
       return res.json({
-        message: data.data.display_text || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        message: data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
         transactionId: txn.id
       });
     } catch (pushErr) {
-      const providerMsg = pushErr.response?.data?.message;
+      const providerMsg = pushErr.response?.data?.error;
       await supabase
         .from('transactions')
         .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
@@ -196,9 +186,8 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
 });
 
 // GET /api/payments/status/:transactionId — polled by the frontend.
-// Falls back to Paystack's Verify Transaction API if still pending and no
-// webhook has landed yet — mobile money charges are expected to resolve or
-// fail within Paystack's own 180-second window.
+// Falls back to FXS Pay's status endpoint if still pending and no webhook
+// has landed yet.
 router.get('/status/:transactionId', async (req, res) => {
   const { data: txn, error } = await supabase
     .from('transactions')
@@ -210,15 +199,15 @@ router.get('/status/:transactionId', async (req, res) => {
 
   if (txn.status === 'pending' && txn.fxs_reference) {
     try {
-      const { data } = await paystack.get(`/transaction/verify/${txn.fxs_reference}`);
-      const providerStatus = data.data?.status; // 'success' | 'failed' | 'abandoned' | ...
+      const { data } = await fxspay.get(`/api/mpesa/status/${txn.fxs_reference}`);
+      const providerStatus = data.transaction?.status; // 'pending' | 'success' | 'failed'
 
       if (providerStatus === 'success') {
-        await creditOrFailTransaction(txn, 'success', { raw: data.data });
+        await creditOrFailTransaction(txn, 'success', { raw: data.transaction });
         return res.json({ status: 'success', votes_requested: txn.votes_requested });
       }
-      if (providerStatus === 'failed' || providerStatus === 'abandoned') {
-        await creditOrFailTransaction(txn, 'failed', { reason: providerStatus, raw: data.data });
+      if (providerStatus === 'failed') {
+        await creditOrFailTransaction(txn, 'failed', { reason: providerStatus, raw: data.transaction });
         return res.json({ status: 'failed', votes_requested: txn.votes_requested });
       }
     } catch (_) {
@@ -257,16 +246,16 @@ async function creditOrFailTransaction(txn, status, extra) {
   }
 }
 
-// POST /api/payments/webhook — Paystack calls this on charge.success (and
-// other events we ignore). Signature is HMAC-SHA512 of the raw body using
-// your Paystack SECRET KEY — no separate webhook secret to register, unlike
-// FXS Pay. Set this URL once in the Paystack dashboard under
-// Settings → API Keys & Webhooks.
+// POST /api/payments/webhook — FXS Pay calls this on payment.success /
+// payment.failed. Signature is a hex HMAC-SHA256 of the raw JSON body,
+// computed with the webhook secret you got back when registering this URL
+// via POST /api/webhook/endpoints (separate from your FXS_API_KEY). Set
+// FXS_WEBHOOK_SECRET in .env to that value.
 router.post('/webhook', async (req, res) => {
   try {
-    const signature = req.headers['x-paystack-signature'];
+    const signature = req.headers['x-fxspay-signature'];
     const expected = crypto
-      .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .createHmac('sha256', process.env.FXS_WEBHOOK_SECRET)
       .update(req.rawBody || Buffer.from(JSON.stringify(req.body)))
       .digest('hex');
 
@@ -274,20 +263,23 @@ router.post('/webhook', async (req, res) => {
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
-    // Acknowledge immediately — Paystack times out and retries if we're slow
+    // Acknowledge immediately — FXS Pay times out and retries if we're slow
     res.status(200).json({ message: 'Received' });
 
-    const { event, data } = req.body;
-    if (event !== 'charge.success' || !data?.reference) return;
+    const event = req.headers['x-fxspay-event'];
+    const { transactionId, reason, receiptUrl } = req.body;
+    if (!transactionId || (event !== 'payment.success' && event !== 'payment.failed')) return;
 
     const { data: txn } = await supabase
       .from('transactions')
       .select('*')
-      .eq('fxs_reference', data.reference)
+      .eq('fxs_reference', transactionId)
       .single();
 
+    const status = event === 'payment.success' ? 'success' : 'failed';
+
     if (txn) {
-      await creditOrFailTransaction(txn, 'success', { raw: data });
+      await creditOrFailTransaction(txn, status, { reason, receiptUrl, raw: req.body });
       return;
     }
 
@@ -295,12 +287,16 @@ router.post('/webhook', async (req, res) => {
     const { data: sponsorship } = await supabase
       .from('sponsorships')
       .select('*')
-      .eq('fxs_reference', data.reference)
+      .eq('fxs_reference', transactionId)
       .single();
 
     if (sponsorship) {
-      const { activateSponsorship } = require('./sponsorship');
-      await activateSponsorship(sponsorship);
+      if (status === 'success') {
+        const { activateSponsorship } = require('./sponsorship');
+        await activateSponsorship(sponsorship);
+      } else {
+        await supabase.from('sponsorships').update({ status: 'failed' }).eq('id', sponsorship.id);
+      }
       return;
     }
 
@@ -308,16 +304,20 @@ router.post('/webhook', async (req, res) => {
     const { data: application } = await supabase
       .from('nomination_applications')
       .select('*')
-      .eq('fxs_reference', data.reference)
+      .eq('fxs_reference', transactionId)
       .single();
 
     if (application) {
-      const { markApplicationPaid } = require('./nominations');
-      await markApplicationPaid(application);
+      if (status === 'success') {
+        const { markApplicationPaid } = require('./nominations');
+        await markApplicationPaid(application);
+      } else {
+        await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
+      }
       return;
     }
 
-    console.error('[webhook] no matching transaction, sponsorship, or application for reference', data.reference);
+    console.error('[webhook] no matching transaction, sponsorship, or application for', transactionId);
   } catch (err) {
     console.error('[webhook] error processing event:', err.message);
     // Response already sent above — nothing further to return here.

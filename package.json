@@ -1,7 +1,7 @@
 {
-  "name": "kenyan-excellence-awards-backend",
+  "name": "top-celebrities-award-backend",
   "version": "1.0.0",
-  "description": "API for the Kenyan Excellence Awards voting platform (FXS Pay + M-Pesa STK Push)",
+  "description": "API for the Top Celebrities Award (TCA) voting platform (FXS Pay + M-Pesa STK Push)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {

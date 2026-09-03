@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — add category_id to transactions
+-- Top Celebrities Award (TCA) — add category_id to transactions
 -- Run this once in the Supabase SQL editor, after 001_sponsorships.sql
 -- Lets us check "how many free votes has this phone used in this category
 -- today" without joining through nominees every time.

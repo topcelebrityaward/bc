@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: kea-backend
+    name: tca-backend
     runtime: node
     plan: free
     buildCommand: npm install
@@ -14,7 +14,9 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: PAYSTACK_SECRET_KEY
+      - key: FXS_API_KEY
+        sync: false
+      - key: FXS_WEBHOOK_SECRET
         sync: false
       - key: VOTE_PRICE
         value: 20

@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — countdown + nomination applications migration
+-- Top Celebrities Award (TCA) — countdown + nomination applications migration
 -- Run this once in the Supabase SQL editor, after 002_transactions_category.sql
 
 alter table categories add column if not exists voting_ends_at timestamptz;

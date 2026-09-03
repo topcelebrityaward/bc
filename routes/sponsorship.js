@@ -6,9 +6,9 @@ const supabase = require('../supabaseClient');
 
 const SPONSOR_DAY_PRICE = Number(process.env.SPONSOR_DAY_PRICE || 50000);
 
-const paystack = axios.create({
-  baseURL: 'https://api.paystack.co',
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+const fxspay = axios.create({
+  baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
+  headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
   timeout: 20000
 });
 
@@ -72,27 +72,25 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
     try {
-      const { data } = await paystack.post('/charge', {
-        email: `v${normalizedPhone}@gmail.com`,
-        amount: amount * 100, // Paystack reads KES amounts in subunits — see payments.js for how this was confirmed
-        currency: 'KES',
-        mobile_money: {
-          phone: `+${normalizedPhone}`,
-          provider: 'mpesa'
-        }
+      // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
+      const { data } = await fxspay.post('/api/mpesa/stk-push', {
+        phone: normalizedPhone,
+        amount,
+        description: `${dayCount} day(s) Free Voting Day sponsorship — ${category.name}`,
+        email: `v${normalizedPhone}@gmail.com`
       });
 
       await supabase
         .from('sponsorships')
-        .update({ fxs_reference: data.data.reference })
+        .update({ fxs_reference: data.transactionId })
         .eq('id', sponsorship.id);
 
       return res.json({
-        message: data.data.display_text || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        message: data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
         sponsorshipId: sponsorship.id
       });
     } catch (pushErr) {
-      const providerMsg = pushErr.response?.data?.message;
+      const providerMsg = pushErr.response?.data?.error;
       await supabase
         .from('sponsorships')
         .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
@@ -116,14 +114,14 @@ router.get('/status/:sponsorshipId', async (req, res) => {
 
   if (sponsorship.status === 'pending' && sponsorship.fxs_reference) {
     try {
-      const { data } = await paystack.get(`/transaction/verify/${sponsorship.fxs_reference}`);
-      const providerStatus = data.data?.status;
+      const { data } = await fxspay.get(`/api/mpesa/status/${sponsorship.fxs_reference}`);
+      const providerStatus = data.transaction?.status;
 
       if (providerStatus === 'success') {
         await activateSponsorship(sponsorship);
         return res.json({ status: 'success', days: sponsorship.days });
       }
-      if (providerStatus === 'failed' || providerStatus === 'abandoned') {
+      if (providerStatus === 'failed') {
         await supabase.from('sponsorships').update({ status: 'failed' }).eq('id', sponsorship.id);
         return res.json({ status: 'failed' });
       }

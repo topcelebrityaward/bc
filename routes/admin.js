@@ -275,7 +275,7 @@ router.get('/export/csv', async (req, res) => {
     .join('\n');
 
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="kea-votes-export.csv"');
+  res.setHeader('Content-Disposition', 'attachment; filename="tca-votes-export.csv"');
   res.send(header + rows);
 });
 

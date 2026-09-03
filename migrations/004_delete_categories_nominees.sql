@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — delete categories/nominees
+-- Top Celebrities Award (TCA) — delete categories/nominees
 -- Run in the Supabase SQL editor.
 --
 -- WARNING: this permanently deletes votes and transaction records tied to

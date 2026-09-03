@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — bulk seed data
+-- Top Celebrities Award (TCA) — bulk seed data
 -- Run this ONCE in the Supabase SQL editor, after schema.sql
 -- Uses a DO block with variables so category ids can be reused for their nominees
 

@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — Sponsor Free Voting Day migration
+-- Top Celebrities Award (TCA) — Sponsor Free Voting Day migration
 -- Run this once in the Supabase SQL editor, after schema.sql
 
 create table if not exists sponsorships (
@@ -8,7 +8,7 @@ create table if not exists sponsorships (
   amount numeric not null,          -- days * SPONSOR_DAY_PRICE, whole KES
   phone_number text not null,
   status text not null default 'pending', -- pending | success | failed
-  fxs_reference text,               -- Paystack's own transaction reference
+  fxs_reference text,               -- FXS Pay's own transaction id
   starts_at timestamptz,            -- set once payment succeeds
   ends_at timestamptz,              -- starts_at + (days * 24h)
   result_desc text,

@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — Supabase schema
+-- Top Celebrities Award (TCA) — Supabase schema
 -- Run this in the Supabase SQL editor (or via `supabase db push`)
 
 create extension if not exists "pgcrypto";
@@ -45,7 +45,7 @@ create table if not exists transactions (
   amount numeric not null,
   votes_requested int not null,
   status text not null default 'pending', -- pending | success | failed | cancelled
-  fxs_reference text,           -- payment provider's own transaction reference (Paystack's `reference`, despite the column name — kept as-is to avoid a migration)
+  fxs_reference text,           -- FXS Pay's own transaction id (returned as `transactionId` from stk-push)
   mpesa_receipt text,           -- populated from callback on success
   result_code text,
   result_desc text,

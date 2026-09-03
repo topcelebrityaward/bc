@@ -1,4 +1,4 @@
--- Kenyan Excellence Awards — nomination application fee migration
+-- Top Celebrities Award (TCA) — nomination application fee migration
 -- Run this once in the Supabase SQL editor, after 004_delete_categories_nominees.sql
 
 alter table nomination_applications add column if not exists amount numeric default 200;

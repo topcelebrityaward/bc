@@ -6,9 +6,9 @@ const supabase = require('../supabaseClient');
 
 const APPLICATION_FEE = Number(process.env.APPLICATION_FEE || 200);
 
-const paystack = axios.create({
-  baseURL: 'https://api.paystack.co',
-  headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+const fxspay = axios.create({
+  baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
+  headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
   timeout: 20000
 });
 
@@ -90,27 +90,25 @@ router.post('/apply', applyLimiter, async (req, res) => {
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
     try {
-      const { data } = await paystack.post('/charge', {
-        email: `v${normalizedPhone}@gmail.com`,
-        amount: APPLICATION_FEE * 100, // Paystack reads KES amounts in subunits — see payments.js for how this was confirmed
-        currency: 'KES',
-        mobile_money: {
-          phone: `+${normalizedPhone}`,
-          provider: 'mpesa'
-        }
+      // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
+      const { data } = await fxspay.post('/api/mpesa/stk-push', {
+        phone: normalizedPhone,
+        amount: APPLICATION_FEE,
+        description: `Nomination application fee — ${fullName.trim()}`,
+        email: email ? email.trim() : `v${normalizedPhone}@gmail.com`
       });
 
       await supabase
         .from('nomination_applications')
-        .update({ fxs_reference: data.data.reference })
+        .update({ fxs_reference: data.transactionId })
         .eq('id', application.id);
 
       return res.json({
-        message: data.data.display_text || 'STK Push sent. Enter your M-Pesa PIN to pay the KSh 200 application fee.',
+        message: data.message || 'STK Push sent. Enter your M-Pesa PIN to pay the KSh 200 application fee.',
         applicationId: application.id
       });
     } catch (pushErr) {
-      const providerMsg = pushErr.response?.data?.message;
+      const providerMsg = pushErr.response?.data?.error;
       await supabase
         .from('nomination_applications')
         .update({ payment_status: 'failed' })
@@ -134,14 +132,14 @@ router.get('/status/:applicationId', async (req, res) => {
 
   if (application.payment_status === 'pending' && application.fxs_reference) {
     try {
-      const { data } = await paystack.get(`/transaction/verify/${application.fxs_reference}`);
-      const providerStatus = data.data?.status;
+      const { data } = await fxspay.get(`/api/mpesa/status/${application.fxs_reference}`);
+      const providerStatus = data.transaction?.status;
 
       if (providerStatus === 'success') {
         await markApplicationPaid(application);
         return res.json({ payment_status: 'success' });
       }
-      if (providerStatus === 'failed' || providerStatus === 'abandoned') {
+      if (providerStatus === 'failed') {
         await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
         return res.json({ payment_status: 'failed' });
       }
