@@ -9,7 +9,7 @@ const SPONSOR_DAY_PRICE = Number(process.env.SPONSOR_DAY_PRICE || 50000);
 const fxspay = axios.create({
   baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
   headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
-  timeout: 20000
+  timeout: 45000 // generous — FXS Pay's own Render free-tier backend can take 30s+ to cold-start
 });
 
 const initiateLimiter = rateLimit({

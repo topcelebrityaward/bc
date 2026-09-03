@@ -11,7 +11,7 @@ const MAX_FREE_VOTES_PER_PERSON = Number(process.env.MAX_FREE_VOTES_PER_PERSON |
 const fxspay = axios.create({
   baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
   headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
-  timeout: 20000
+  timeout: 45000 // generous — FXS Pay's own Render free-tier backend can take 30s+ to cold-start
 });
 
 const initiateLimiter = rateLimit({
