@@ -151,40 +151,78 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
 
     if (txnErr) return res.status(500).json({ error: txnErr.message });
 
-    try {
-      // FXS Pay takes amounts as plain whole/decimal KES — no subunit
-      // conversion needed (unlike Paystack, which reads KES in subunits).
-      const { data } = await fxspay.post('/api/mpesa/stk-push', {
-        phone: normalizedPhone,
-        amount,
-        description: `${voteCount} vote(s) for ${nominee.full_name}`,
-        email: `v${normalizedPhone}@gmail.com`
-      });
+    // FXS Pay takes amounts as plain whole/decimal KES — no subunit
+    // conversion needed (unlike Paystack, which reads KES in subunits).
+    const stkPushPromise = fxspay.post('/api/mpesa/stk-push', {
+      phone: normalizedPhone,
+      amount,
+      description: `${voteCount} vote(s) for ${nominee.full_name}`,
+      email: `v${normalizedPhone}@gmail.com`
+    });
 
+    // Give FXS Pay 8s to answer normally. If it's cold-starting (can take
+    // minutes on their free tier), don't hold this request open waiting —
+    // respond now and finish linking fxs_reference once it actually resolves,
+    // so a slow reply never leaves the transaction unmatched when the
+    // webhook eventually arrives.
+    const raced = await Promise.race([
+      stkPushPromise.then((r) => ({ ok: true, data: r.data })).catch((e) => ({ ok: false, err: e })),
+      new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 8000))
+    ]);
+
+    if (raced.pending) {
+      stkPushPromise
+        .then(async (r) => {
+          await supabase
+            .from('transactions')
+            .update({ fxs_reference: r.data.transactionId })
+            .eq('id', txn.id);
+        })
+        .catch(async (pushErr) => {
+          console.error(
+            '[payments/initiate] delayed FXS Pay stk-push failed:',
+            pushErr.response?.status,
+            pushErr.response?.data || pushErr.message
+          );
+          await supabase
+            .from('transactions')
+            .update({ status: 'failed', result_desc: pushErr.response?.data?.error || pushErr.message || 'Charge request failed' })
+            .eq('id', txn.id);
+        });
+
+      return res.json({
+        message: 'The payment service is starting up — this can take a minute. Check your phone for the M-Pesa prompt shortly.',
+        transactionId: txn.id,
+        pending: true
+      });
+    }
+
+    if (raced.ok) {
       // FXS Pay's own transaction id — this is what the webhook and the
       // /api/mpesa/status/:transactionId poll both reference later.
       await supabase
         .from('transactions')
-        .update({ fxs_reference: data.transactionId })
+        .update({ fxs_reference: raced.data.transactionId })
         .eq('id', txn.id);
 
       return res.json({
-        message: data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        message: raced.data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
         transactionId: txn.id
       });
-    } catch (pushErr) {
-      const providerMsg = pushErr.response?.data?.error;
-      console.error(
-        '[payments/initiate] FXS Pay stk-push failed:',
-        pushErr.response?.status,
-        pushErr.response?.data || pushErr.message
-      );
-      await supabase
-        .from('transactions')
-        .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
-        .eq('id', txn.id);
-      return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
     }
+
+    const pushErr = raced.err;
+    const providerMsg = pushErr.response?.data?.error;
+    console.error(
+      '[payments/initiate] FXS Pay stk-push failed:',
+      pushErr.response?.status,
+      pushErr.response?.data || pushErr.message
+    );
+    await supabase
+      .from('transactions')
+      .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
+      .eq('id', txn.id);
+    return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
   } catch (err) {
     res.status(500).json({ error: 'Unexpected error initiating payment' });
   }

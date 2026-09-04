@@ -71,37 +71,73 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
 
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-    try {
-      // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
-      const { data } = await fxspay.post('/api/mpesa/stk-push', {
-        phone: normalizedPhone,
-        amount,
-        description: `${dayCount} day(s) Free Voting Day sponsorship — ${category.name}`,
-        email: `v${normalizedPhone}@gmail.com`
-      });
+    // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
+    const stkPushPromise = fxspay.post('/api/mpesa/stk-push', {
+      phone: normalizedPhone,
+      amount,
+      description: `${dayCount} day(s) Free Voting Day sponsorship — ${category.name}`,
+      email: `v${normalizedPhone}@gmail.com`
+    });
 
+    // Don't hold the request open through a FXS Pay cold start (can take
+    // minutes) — respond after a short grace window and finish linking
+    // fxs_reference in the background once it resolves.
+    const raced = await Promise.race([
+      stkPushPromise.then((r) => ({ ok: true, data: r.data })).catch((e) => ({ ok: false, err: e })),
+      new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 8000))
+    ]);
+
+    if (raced.pending) {
+      stkPushPromise
+        .then(async (r) => {
+          await supabase
+            .from('sponsorships')
+            .update({ fxs_reference: r.data.transactionId })
+            .eq('id', sponsorship.id);
+        })
+        .catch(async (pushErr) => {
+          console.error(
+            '[sponsorship/initiate] delayed FXS Pay stk-push failed:',
+            pushErr.response?.status,
+            pushErr.response?.data || pushErr.message
+          );
+          await supabase
+            .from('sponsorships')
+            .update({ status: 'failed', result_desc: pushErr.response?.data?.error || pushErr.message || 'Charge request failed' })
+            .eq('id', sponsorship.id);
+        });
+
+      return res.json({
+        message: 'The payment service is starting up — this can take a minute. Check your phone for the M-Pesa prompt shortly.',
+        sponsorshipId: sponsorship.id,
+        pending: true
+      });
+    }
+
+    if (raced.ok) {
       await supabase
         .from('sponsorships')
-        .update({ fxs_reference: data.transactionId })
+        .update({ fxs_reference: raced.data.transactionId })
         .eq('id', sponsorship.id);
 
       return res.json({
-        message: data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        message: raced.data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
         sponsorshipId: sponsorship.id
       });
-    } catch (pushErr) {
-      const providerMsg = pushErr.response?.data?.error;
-      console.error(
-        '[sponsorship/initiate] FXS Pay stk-push failed:',
-        pushErr.response?.status,
-        pushErr.response?.data || pushErr.message
-      );
-      await supabase
-        .from('sponsorships')
-        .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
-        .eq('id', sponsorship.id);
-      return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
     }
+
+    const pushErr = raced.err;
+    const providerMsg = pushErr.response?.data?.error;
+    console.error(
+      '[sponsorship/initiate] FXS Pay stk-push failed:',
+      pushErr.response?.status,
+      pushErr.response?.data || pushErr.message
+    );
+    await supabase
+      .from('sponsorships')
+      .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
+      .eq('id', sponsorship.id);
+    return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
   } catch (err) {
     res.status(500).json({ error: 'Unexpected error initiating sponsorship' });
   }
