@@ -1,6 +1,6 @@
 # Top Celebrities Award (TCA) — Voting Platform
 
-A public voting site: KSh 20/vote via M-Pesa STK Push (through FXS Pay),
+A public voting site: KSh 20/vote via M-Pesa STK Push (through Paystack),
 unlimited votes per person, live public results, and an admin dashboard
 for managing categories, nominees, and payments.
 
@@ -31,7 +31,7 @@ npm install
 Fill in `.env`:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — from step 1
 - `JWT_SECRET` — any long random string
-- `FXS_API_KEY`, `FXS_WEBHOOK_SECRET` — **see the FXS Pay setup below**
+- `PAYSTACK_SECRET_KEY` — **see the Paystack setup below**
 
 Create your first admin login:
 ```
@@ -48,47 +48,46 @@ either connect your repo directly (Render auto-detects `npm start`), or use
 the included `backend/render.yaml` Blueprint (New → Blueprint in Render,
 point it at the repo). Either way, the `sync: false` variables in
 `render.yaml` (JWT_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-FXS_API_KEY, FXS_WEBHOOK_SECRET) still need to be filled in manually from
-the dashboard — Blueprints don't auto-fill secrets.
+PAYSTACK_SECRET_KEY) still need to be filled in manually from the
+dashboard — Blueprints don't auto-fill secrets.
 
-## 3. FXS Pay setup
+## 3. Paystack setup
 
 `routes/payments.js`, `routes/sponsorship.js`, and `routes/nominations.js`
-all call FXS Pay's M-Pesa STK Push API (`https://fxspay.onrender.com`) to
-collect payment. No card data ever touches this backend.
+all call Paystack's Charge API (`https://api.paystack.co/charge`, fixed —
+no base URL to configure) with `mobile_money: { provider: "mpesa" }` to
+collect payment via M-Pesa STK Push. No card data ever touches this backend.
 
-1. **Register a merchant account**: `POST /api/merchant/register` with your
-   business name, email, and a password. This returns a `token` you can use
-   right away, but a **live** API key needs your account approved first (a
-   **test** key can be generated immediately regardless of approval status).
-2. **Generate an API key**: `POST /api/merchant/api-key` with
-   `{ "env": "live" }` (or `"test"` while testing). **The full key is shown
-   exactly once** — copy it straight into `.env` as `FXS_API_KEY`. FXS Pay
-   never displays or stores the full value again; if you lose it, generate
-   a new one.
-3. **Deploy the backend** (Render) first, then **register your webhook
-   URL**: `POST /api/webhook/endpoints` with
-   `{ "url": "https://your-backend.onrender.com/api/payments/webhook" }`
-   (send this request using your API key for auth — e.g. via curl or
-   Postman). The response includes a `secret`, shown once — copy it into
-   `.env` as `FXS_WEBHOOK_SECRET`. Unlike a Paystack-style setup, FXS Pay
-   uses this separate webhook secret rather than your API key to sign
-   webhook payloads.
-4. **Test with a small real vote first** and check the actual amount
-   charged on your phone. FXS Pay takes amounts as plain whole/decimal KES
-   (not subunits) — this is what the code assumes, but it's worth
-   confirming directly rather than trusting blindly, since getting it
-   wrong means over- or under-charging every voter.
+1. **Get your secret key**: Paystack Dashboard → Settings → API Keys &
+   Webhooks. Use `sk_test_...` while testing; switch to `sk_live_...` once
+   your account is approved for M-Pesa mobile money in Kenya (a separate
+   activation from card payments — request it if it's not already enabled).
+   Put it in `.env` as `PAYSTACK_SECRET_KEY`. This one key covers both API
+   auth and webhook signature verification — there is no separate webhook
+   secret to generate.
+2. **Deploy the backend** (Render) first, then set your webhook URL by
+   hand: Dashboard → Settings → API Keys & Webhooks → Webhook URL:
+   `https://your-backend.onrender.com/api/payments/webhook`
+   (set this for both Test and Live mode — there's no API call to register
+   it, unlike FXS Pay).
+3. **Test with a small real vote first** and check the actual amount
+   charged on your phone. Paystack reads KES amounts in the smallest unit
+   (cents) — the code already multiplies by 100 before sending — but it's
+   worth confirming directly rather than trusting blindly, since getting
+   this wrong means over- or under-charging every voter by 100x.
 
-How it works: each route calls FXS Pay's `POST /api/mpesa/stk-push` with
-`{ phone, amount, description, email }`, which returns `202` immediately
-with a `transactionId` — a "started" acknowledgement, not a synchronous
-success/fail. `POST /api/payments/webhook` verifies FXS Pay's HMAC-SHA256
-signature (header `X-FXSPay-Signature`, computed over the raw request body
-using `FXS_WEBHOOK_SECRET`) and credits votes on the `payment.success`
-event (header `X-FXSPay-Event`). The status endpoints also fall back to
-FXS Pay's `GET /api/mpesa/status/:transactionId` if a webhook hasn't
-arrived within the request window.
+How it works: each route generates its own unique `reference` and saves it
+*before* calling Paystack, then calls `POST /charge` with
+`{ email, amount, currency: "KES", reference, mobile_money: { phone, provider: "mpesa" } }`.
+Because the reference is ours from the start, there's no ambiguity later —
+`GET /charge/:reference` (used by the `/status` polling endpoints) and the
+webhook both resolve against that exact reference, with no amount-based
+guessing needed. `POST /api/payments/webhook` verifies Paystack's
+HMAC-SHA512 signature (header `x-paystack-signature`, computed over the
+raw request body using `PAYSTACK_SECRET_KEY`) and, on `charge.success` /
+`charge.failed`, looks the reference up across `transactions`,
+`sponsorships`, and `nomination_applications` (all three flows share this
+one webhook URL) to credit the right one.
 
 ## 4. Configure and deploy the frontend
 

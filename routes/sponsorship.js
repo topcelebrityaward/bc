@@ -1,16 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
+const { paystack, generateReference, placeholderEmail } = require('../paystackClient');
 
 const SPONSOR_DAY_PRICE = Number(process.env.SPONSOR_DAY_PRICE || 50000);
-
-const fxspay = axios.create({
-  baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
-  headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
-  timeout: 45000 // generous — FXS Pay's own Render free-tier backend can take 30s+ to cold-start
-});
 
 const initiateLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -71,73 +65,51 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
 
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-    // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
-    const stkPushPromise = fxspay.post('/api/mpesa/stk-push', {
-      phone: normalizedPhone,
-      amount,
-      description: `${dayCount} day(s) Free Voting Day sponsorship — ${category.name}`,
-      email: `v${normalizedPhone}@gmail.com`
-    });
+    // Reference is generated and saved BEFORE calling Paystack — see
+    // payments.js for why this removes the need for any cold-start
+    // race or ambiguous phone/amount reconciliation.
+    const reference = generateReference('sponsor', sponsorship.id);
+    await supabase.from('sponsorships').update({ paystack_reference: reference }).eq('id', sponsorship.id);
 
-    // Don't hold the request open through a FXS Pay cold start (can take
-    // minutes) — respond after a short grace window and finish linking
-    // fxs_reference in the background once it resolves.
-    const raced = await Promise.race([
-      stkPushPromise.then((r) => ({ ok: true, data: r.data })).catch((e) => ({ ok: false, err: e })),
-      new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 8000))
-    ]);
-
-    if (raced.pending) {
-      stkPushPromise
-        .then(async (r) => {
-          await supabase
-            .from('sponsorships')
-            .update({ fxs_reference: r.data.transactionId })
-            .eq('id', sponsorship.id);
-        })
-        .catch(async (pushErr) => {
-          console.error(
-            '[sponsorship/initiate] delayed FXS Pay stk-push failed:',
-            pushErr.response?.status,
-            pushErr.response?.data || pushErr.message
-          );
-          await supabase
-            .from('sponsorships')
-            .update({ status: 'failed', result_desc: pushErr.response?.data?.error || pushErr.message || 'Charge request failed' })
-            .eq('id', sponsorship.id);
-        });
-
-      return res.json({
-        message: 'The payment service is starting up — this can take a minute. Check your phone for the M-Pesa prompt shortly.',
-        sponsorshipId: sponsorship.id,
-        pending: true
+    try {
+      const { data } = await paystack.post('/charge', {
+        email: placeholderEmail(normalizedPhone),
+        amount: String(amount * 100), // Paystack reads KES in the smallest unit (cents)
+        currency: 'KES',
+        reference,
+        mobile_money: { phone: `+${normalizedPhone}`, provider: 'mpesa' }
       });
-    }
 
-    if (raced.ok) {
-      await supabase
-        .from('sponsorships')
-        .update({ fxs_reference: raced.data.transactionId })
-        .eq('id', sponsorship.id);
+      const status = data.data?.status;
+
+      if (status === 'success') {
+        await activateSponsorship(sponsorship);
+        return res.json({ message: 'Payment confirmed! Free voting day activated.', sponsorshipId: sponsorship.id });
+      }
+
+      if (status === 'failed') {
+        await supabase
+          .from('sponsorships')
+          .update({ status: 'failed', result_desc: data.data?.gateway_response || 'Payment failed' })
+          .eq('id', sponsorship.id);
+        return res.status(502).json({ error: data.data?.gateway_response || 'Payment failed. Please try again.' });
+      }
 
       return res.json({
-        message: raced.data.message || 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        message: 'STK Push sent. Enter your M-Pesa PIN on your phone to complete payment.',
+        sponsorshipId: sponsorship.id
+      });
+    } catch (pushErr) {
+      console.error(
+        '[sponsorship/initiate] Paystack /charge request failed:',
+        pushErr.response?.status,
+        pushErr.response?.data || pushErr.message
+      );
+      return res.json({
+        message: 'STK Push sent. If you don\u2019t see a prompt within a minute, you can try again.',
         sponsorshipId: sponsorship.id
       });
     }
-
-    const pushErr = raced.err;
-    const providerMsg = pushErr.response?.data?.error;
-    console.error(
-      '[sponsorship/initiate] FXS Pay stk-push failed:',
-      pushErr.response?.status,
-      pushErr.response?.data || pushErr.message
-    );
-    await supabase
-      .from('sponsorships')
-      .update({ status: 'failed', result_desc: providerMsg || pushErr.message || 'Charge request failed' })
-      .eq('id', sponsorship.id);
-    return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
   } catch (err) {
     res.status(500).json({ error: 'Unexpected error initiating sponsorship' });
   }
@@ -153,10 +125,10 @@ router.get('/status/:sponsorshipId', async (req, res) => {
 
   if (error || !sponsorship) return res.status(404).json({ error: 'Sponsorship not found' });
 
-  if (sponsorship.status === 'pending' && sponsorship.fxs_reference) {
+  if (sponsorship.status === 'pending' && sponsorship.paystack_reference) {
     try {
-      const { data } = await fxspay.get(`/api/mpesa/status/${sponsorship.fxs_reference}`);
-      const providerStatus = data.transaction?.status;
+      const { data } = await paystack.get(`/charge/${sponsorship.paystack_reference}`);
+      const providerStatus = data.data?.status;
 
       if (providerStatus === 'success') {
         await activateSponsorship(sponsorship);

@@ -1,16 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
+const { paystack, generateReference, placeholderEmail } = require('../paystackClient');
 
 const APPLICATION_FEE = Number(process.env.APPLICATION_FEE || 200);
-
-const fxspay = axios.create({
-  baseURL: process.env.FXS_BASE_URL || 'https://fxspay.onrender.com',
-  headers: { Authorization: `Bearer ${process.env.FXS_API_KEY}` },
-  timeout: 45000 // generous — FXS Pay's own Render free-tier backend can take 30s+ to cold-start
-});
 
 const applyLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -89,73 +83,48 @@ router.post('/apply', applyLimiter, async (req, res) => {
 
     if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-    // FXS Pay takes plain whole/decimal KES amounts — no subunit conversion.
-    const stkPushPromise = fxspay.post('/api/mpesa/stk-push', {
-      phone: normalizedPhone,
-      amount: APPLICATION_FEE,
-      description: `Nomination application fee — ${fullName.trim()}`,
-      email: email ? email.trim() : `v${normalizedPhone}@gmail.com`
-    });
+    // Reference is generated and saved BEFORE calling Paystack — see
+    // payments.js for why this removes the need for any cold-start
+    // race or ambiguous phone/amount reconciliation.
+    const reference = generateReference('nom', application.id);
+    await supabase.from('nomination_applications').update({ paystack_reference: reference }).eq('id', application.id);
 
-    // Don't hold the request open through a FXS Pay cold start (can take
-    // minutes) — respond after a short grace window and finish linking
-    // fxs_reference in the background once it resolves.
-    const raced = await Promise.race([
-      stkPushPromise.then((r) => ({ ok: true, data: r.data })).catch((e) => ({ ok: false, err: e })),
-      new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 8000))
-    ]);
-
-    if (raced.pending) {
-      stkPushPromise
-        .then(async (r) => {
-          await supabase
-            .from('nomination_applications')
-            .update({ fxs_reference: r.data.transactionId })
-            .eq('id', application.id);
-        })
-        .catch(async (pushErr) => {
-          console.error(
-            '[nominations/apply] delayed FXS Pay stk-push failed:',
-            pushErr.response?.status,
-            pushErr.response?.data || pushErr.message
-          );
-          await supabase
-            .from('nomination_applications')
-            .update({ payment_status: 'failed' })
-            .eq('id', application.id);
-        });
-
-      return res.json({
-        message: 'The payment service is starting up — this can take a minute. Check your phone for the M-Pesa prompt shortly.',
-        applicationId: application.id,
-        pending: true
+    try {
+      const { data } = await paystack.post('/charge', {
+        email: email ? email.trim() : placeholderEmail(normalizedPhone),
+        amount: String(APPLICATION_FEE * 100), // Paystack reads KES in the smallest unit (cents)
+        currency: 'KES',
+        reference,
+        mobile_money: { phone: `+${normalizedPhone}`, provider: 'mpesa' }
       });
-    }
 
-    if (raced.ok) {
-      await supabase
-        .from('nomination_applications')
-        .update({ fxs_reference: raced.data.transactionId })
-        .eq('id', application.id);
+      const status = data.data?.status;
+
+      if (status === 'success') {
+        await markApplicationPaid(application);
+        return res.json({ message: 'Payment confirmed! Your application has been submitted for review.', applicationId: application.id });
+      }
+
+      if (status === 'failed') {
+        await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
+        return res.status(502).json({ error: data.data?.gateway_response || 'Payment failed. Please try again.' });
+      }
 
       return res.json({
-        message: raced.data.message || 'STK Push sent. Enter your M-Pesa PIN to pay the KSh 200 application fee.',
+        message: 'STK Push sent. Enter your M-Pesa PIN to pay the KSh 200 application fee.',
+        applicationId: application.id
+      });
+    } catch (pushErr) {
+      console.error(
+        '[nominations/apply] Paystack /charge request failed:',
+        pushErr.response?.status,
+        pushErr.response?.data || pushErr.message
+      );
+      return res.json({
+        message: 'STK Push sent. If you don\u2019t see a prompt within a minute, you can try again.',
         applicationId: application.id
       });
     }
-
-    const pushErr = raced.err;
-    const providerMsg = pushErr.response?.data?.error;
-    console.error(
-      '[nominations/apply] FXS Pay stk-push failed:',
-      pushErr.response?.status,
-      pushErr.response?.data || pushErr.message
-    );
-    await supabase
-      .from('nomination_applications')
-      .update({ payment_status: 'failed' })
-      .eq('id', application.id);
-    return res.status(502).json({ error: providerMsg || 'Could not start payment. Please try again.' });
   } catch (err) {
     res.status(500).json({ error: 'Unexpected error submitting application' });
   }
@@ -171,10 +140,10 @@ router.get('/status/:applicationId', async (req, res) => {
 
   if (error || !application) return res.status(404).json({ error: 'Application not found' });
 
-  if (application.payment_status === 'pending' && application.fxs_reference) {
+  if (application.payment_status === 'pending' && application.paystack_reference) {
     try {
-      const { data } = await fxspay.get(`/api/mpesa/status/${application.fxs_reference}`);
-      const providerStatus = data.transaction?.status;
+      const { data } = await paystack.get(`/charge/${application.paystack_reference}`);
+      const providerStatus = data.data?.status;
 
       if (providerStatus === 'success') {
         await markApplicationPaid(application);

@@ -5,6 +5,8 @@ const cors = require('cors');
 const publicRoutes = require('./routes/public');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
+const { router: sponsorshipRoutes } = require('./routes/sponsorship');
+const { router: nominationRoutes } = require('./routes/nominations');
 
 const app = express();
 
@@ -15,15 +17,17 @@ app.set('trust proxy', 1);
 
 app.use(cors());
 // The `verify` hook stashes the raw body bytes on req.rawBody, needed to
-// check the Paystack webhook's HMAC-SHA512 signature (must be computed over
-// the exact raw bytes, not a re-serialized JSON.stringify(req.body)).
+// check the Paystack webhook's HMAC-SHA512 signature (must be computed
+// over the exact raw bytes, not a re-serialized JSON.stringify(req.body)).
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
-app.get('/', (req, res) => res.json({ status: 'Kenyan Excellence Awards API running' }));
+app.get('/', (req, res) => res.json({ status: 'Top Celebrities Award (TCA) API running' }));
 
 app.use('/api', publicRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/sponsorship', sponsorshipRoutes);
+app.use('/api/nominations', nominationRoutes);
 
 // Fallback error handler
 app.use((err, req, res, next) => {
@@ -32,4 +36,4 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`KEA API listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`TCA API listening on port ${PORT}`));
