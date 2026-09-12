@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
-const { paystack, generateReference, placeholderEmail, verifyWebhookSignature } = require('../paystackClient');
+const { paystack, generateReference, placeholderEmail, verifyWebhookSignature, TERMINAL_FAILURE_STATUSES } = require('../paystackClient');
 
 const VOTE_PRICE = Number(process.env.VOTE_PRICE || 20);
 const MAX_FREE_VOTES_PER_PERSON = Number(process.env.MAX_FREE_VOTES_PER_PERSON || 2);
@@ -164,7 +164,7 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
         return res.json({ message: 'Payment confirmed. Thank you for voting!', transactionId: txn.id });
       }
 
-      if (status === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(status)) {
         await supabase
           .from('transactions')
           .update({ status: 'failed', result_desc: data.data?.gateway_response || 'Payment failed' })
@@ -217,7 +217,7 @@ router.get('/status/:transactionId', async (req, res) => {
         await creditOrFailTransaction(txn, 'success', { raw: data.data, reason: data.data?.gateway_response });
         return res.json({ status: 'success', votes_requested: txn.votes_requested });
       }
-      if (providerStatus === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(providerStatus)) {
         await creditOrFailTransaction(txn, 'failed', { reason: data.data?.gateway_response, raw: data.data });
         return res.json({ status: 'failed', votes_requested: txn.votes_requested });
       }

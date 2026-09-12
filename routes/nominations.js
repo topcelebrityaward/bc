@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
-const { paystack, generateReference, placeholderEmail } = require('../paystackClient');
+const { paystack, generateReference, placeholderEmail, TERMINAL_FAILURE_STATUSES } = require('../paystackClient');
 
 const APPLICATION_FEE = Number(process.env.APPLICATION_FEE || 200);
 
@@ -105,7 +105,7 @@ router.post('/apply', applyLimiter, async (req, res) => {
         return res.json({ message: 'Payment confirmed! Your application has been submitted for review.', applicationId: application.id });
       }
 
-      if (status === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(status)) {
         await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
         return res.status(502).json({ error: data.data?.gateway_response || 'Payment failed. Please try again.' });
       }
@@ -149,7 +149,7 @@ router.get('/status/:applicationId', async (req, res) => {
         await markApplicationPaid(application);
         return res.json({ payment_status: 'success' });
       }
-      if (providerStatus === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(providerStatus)) {
         await supabase.from('nomination_applications').update({ payment_status: 'failed' }).eq('id', application.id);
         return res.json({ payment_status: 'failed' });
       }

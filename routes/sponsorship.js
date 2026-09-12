@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const supabase = require('../supabaseClient');
-const { paystack, generateReference, placeholderEmail } = require('../paystackClient');
+const { paystack, generateReference, placeholderEmail, TERMINAL_FAILURE_STATUSES } = require('../paystackClient');
 
 const SPONSOR_DAY_PRICE = Number(process.env.SPONSOR_DAY_PRICE || 50000);
 
@@ -87,7 +87,7 @@ router.post('/initiate', initiateLimiter, async (req, res) => {
         return res.json({ message: 'Payment confirmed! Free voting day activated.', sponsorshipId: sponsorship.id });
       }
 
-      if (status === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(status)) {
         await supabase
           .from('sponsorships')
           .update({ status: 'failed', result_desc: data.data?.gateway_response || 'Payment failed' })
@@ -134,7 +134,7 @@ router.get('/status/:sponsorshipId', async (req, res) => {
         await activateSponsorship(sponsorship);
         return res.json({ status: 'success', days: sponsorship.days });
       }
-      if (providerStatus === 'failed') {
+      if (TERMINAL_FAILURE_STATUSES.includes(providerStatus)) {
         await supabase.from('sponsorships').update({ status: 'failed' }).eq('id', sponsorship.id);
         return res.json({ status: 'failed' });
       }
