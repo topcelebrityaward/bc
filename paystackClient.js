@@ -50,4 +50,13 @@ function verifyWebhookSignature(req) {
   return signature === expected;
 }
 
-module.exports = { paystack, generateReference, placeholderEmail, verifyWebhookSignature };
+// Paystack's charge/transaction status can be 'success', 'failed',
+// 'abandoned' (customer started but never completed — e.g. cancelled or
+// ignored the STK prompt), or 'reversed' (a success that was later undone).
+// All of these except 'success' should be treated as "this is over, and it
+// didn't work" — otherwise a cancelled STK prompt looks identical to a
+// still-pending one, and the frontend just spins until it times out instead
+// of reporting the failure right away.
+const TERMINAL_FAILURE_STATUSES = ['failed', 'abandoned', 'reversed'];
+
+module.exports = { paystack, generateReference, placeholderEmail, verifyWebhookSignature, TERMINAL_FAILURE_STATUSES };
